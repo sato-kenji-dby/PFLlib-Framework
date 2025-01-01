@@ -27,12 +27,11 @@ from utils.dataset_utils import check, separate_data, split_data, save_file
 
 random.seed(1)
 np.random.seed(1)
-num_clients = 20
-dir_path = "FashionMNIST/"
+num_clients = 2
 
 
 # Allocate data to users
-def generate_dataset(dir_path, num_clients, niid, balance, partition):
+def generate_dataset(dir_path, num_clients, niid, balance, partition, client0_label_num):
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
         
@@ -80,7 +79,7 @@ def generate_dataset(dir_path, num_clients, niid, balance, partition):
     #     dataset.append(dataset_image[idx])
 
     X, y, statistic = separate_data((dataset_image, dataset_label), num_clients, num_classes, 
-                                    niid, balance, partition, class_per_client=2)
+                                    niid, balance, partition, class_per_client=2, client0_label_num=client0_label_num)
     train_data, test_data = split_data(X, y)
     save_file(config_path, train_path, test_path, train_data, test_data, num_clients, num_classes, 
         statistic, niid, balance, partition)
@@ -90,5 +89,7 @@ if __name__ == "__main__":
     niid = True if sys.argv[1] == "noniid" else False
     balance = True if sys.argv[2] == "balance" else False
     partition = sys.argv[3] if sys.argv[3] != "-" else None
+    client0_label_num = int(sys.argv[4]) if sys.argv[4] != None else None
+    dir_path = sys.argv[5] if sys.argv[4] != None else None
 
-    generate_dataset(dir_path, num_clients, niid, balance, partition)
+    generate_dataset(dir_path, num_clients, niid, balance, partition, client0_label_num)

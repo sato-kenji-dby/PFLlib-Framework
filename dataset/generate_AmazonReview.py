@@ -71,17 +71,14 @@ def generate_dataset(dir_path):
     if not os.path.exists(test_path):
         os.makedirs(test_path)
 
-    rawdata_dir = data_path+"rawdata"
+    root = data_path+"rawdata"
     
     # Get AmazonReview data
-    if not os.path.exists(rawdata_dir):
-        os.makedirs(rawdata_dir)
-        os.system(f'wget https://drive.google.com/u/0/uc?id=1QbXFENNyqor1IlCpRRFtOluI2_hMEd1W&export=download -P {rawdata_dir}')
-    if not os.path.exists(rawdata_dir+'/AmazonReview'):
-        os.system(f'unzip {rawdata_dir}/AmazonReview.zip -d {rawdata_dir}')
-    rawdata_dir = rawdata_dir+'/AmazonReview'
+    if not os.path.exists(root):
+        os.makedirs(root)
+        os.system(f'wget https://drive.google.com/u/0/uc?id=1QbXFENNyqor1IlCpRRFtOluI2_hMEd1W&export=download -P {root}')
 
-    X, y = load_amazon(rawdata_dir)
+    X, y = load_amazon(root)
 
     labelss = []
     for yy in y:

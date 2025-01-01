@@ -20,13 +20,14 @@ import ujson
 import numpy as np
 import gc
 from sklearn.model_selection import train_test_split
-from torch.utils.data import Dataset
-from PIL import Image
-
 
 batch_size = 10
 train_ratio = 0.75 # merge original training set and test set, then split it manually. 
-alpha = 0.1 # for Dirichlet distribution. 100 for exdir
+alpha = 0.5 # for Dirichlet distribution. 100 for exdir
+
+import os
+import ujson
+import shutil
 
 def check(config_path, train_path, test_path, num_clients, niid=False, 
         balance=True, partition=None):
@@ -52,7 +53,7 @@ def check(config_path, train_path, test_path, num_clients, niid=False,
 
     return False
 
-def separate_data(data, num_clients, num_classes, niid=False, balance=False, partition=None, class_per_client=None):
+def separate_data(data, num_clients, num_classes, niid=False, balance=False, partition=None, class_per_client=None, target_count=3000, client0_label_num=None):
     X = [[] for _ in range(num_clients)]
     y = [[] for _ in range(num_clients)]
     statistic = [[] for _ in range(num_clients)]
@@ -68,6 +69,7 @@ def separate_data(data, num_clients, num_classes, niid=False, balance=False, par
         class_per_client = num_classes
 
     if partition == 'pat':
+        
         idxs = np.array(range(len(dataset_label)))
         idx_for_each_class = []
         for i in range(num_classes):
@@ -100,8 +102,10 @@ def separate_data(data, num_clients, num_classes, niid=False, balance=False, par
                     dataidx_map[client] = np.append(dataidx_map[client], idx_for_each_class[i][idx:idx+num_sample], axis=0)
                 idx += num_sample
                 class_num_per_client[client] -= 1
+            
 
     elif partition == "dir":
+        '''
         # https://github.com/IBM/probabilistic-federated-neural-matching/blob/master/experiment.py
         min_size = 0
         K = num_classes
@@ -126,7 +130,154 @@ def separate_data(data, num_clients, num_classes, niid=False, balance=False, par
 
         for j in range(num_clients):
             dataidx_map[j] = idx_batch[j]
-    
+
+        # *** REVISION STARTS HERE ***
+        # Number of labels client 0 should receive, unrelated to original Dirichlet distribution
+
+        # Choose client0_label_num distinct labels from the full range of labels
+        # If client0_label_num > K, we can handle by taking min or raising an error.
+        client0_label_num = min(client0_label_num, K)
+        all_labels = np.arange(K)
+        chosen_labels = np.random.choice(all_labels, size=client0_label_num, replace=False)
+
+        # Gather all data points belonging to these chosen labels
+        chosen_indices = np.where(np.isin(dataset_label, chosen_labels))[0]
+
+        # Assign these indices to client 0, overriding previous assignment
+        dataidx_map[0] = chosen_indices.tolist()
+        # *** REVISION ENDS HERE ***
+        '''
+        dataidx_map = {j: [] for j in range(num_clients)}
+        K = num_classes
+        N = len(dataset_label)
+
+        if num_clients == 2:
+            # 特殊处理：当有2个客户端时
+            print("使用特定策略分配数据给2个客户端。")
+
+            client1_label_allocation = {
+                5: 529,
+                6: 597,
+                7: 643,
+                8: 598,
+                9: 633
+            }
+
+            # 1. 为客户端0分配标签 0 到 client0_label_num - 1，并平均分配每个标签的数据点
+            for label in range(client0_label_num):
+                idx_label = np.where(dataset_label == label)[0]
+                np.random.shuffle(idx_label)  # 随机打乱索引
+                num_samples = len(idx_label) // num_clients  # 平均分配
+
+                # 若数据不足，则通过重复已有样本补足
+                if num_samples == 0:
+                    # 如果一个标签的数据连平均分配1个都不够，至少取1个，然后重复
+                    num_samples = 1
+                if len(idx_label) < num_samples:
+                    # 使用重复补足
+                    selected_indices = np.random.choice(idx_label, size=num_samples, replace=True)
+                else:
+                    selected_indices = idx_label[:num_samples]
+
+                dataidx_map[0].extend(selected_indices.tolist())
+
+            # 2. 为客户端1分配标签编号 >= K/2，并手动指定每个标签的数据点数量
+            min_label_client1 = K // 2
+            for label in range(min_label_client1, K):
+                if label not in client1_label_allocation:
+                   raise ValueError(f"未为客户端1的标签 {label} 指定数据点数量。请在 client1_label_allocation 中添加该标签的分配数量。")
+
+                allocated_count = client1_label_allocation[label]
+                idx_label = np.where(dataset_label == label)[0]
+                np.random.shuffle(idx_label)  # 随机打乱索引
+
+                # 若数据不足，通过重复补足
+                if len(idx_label) < allocated_count:
+                    selected_indices = np.random.choice(idx_label, size=allocated_count, replace=True)
+                else:
+                    selected_indices = idx_label[:allocated_count]
+
+                dataidx_map[1].extend(selected_indices.tolist())
+
+            # 3. 确保每个客户端的数据量不超过 target_count（根据需求调整）
+            for client in range(num_clients):
+                if len(dataidx_map[client]) > target_count:
+                    selected_indices = np.random.choice(dataidx_map[client], size=target_count, replace=False)
+                    dataidx_map[client] = selected_indices.tolist()
+                elif len(dataidx_map[client]) < target_count:
+                    # 数据不足则重复已有的数据
+                    needed = target_count - len(dataidx_map[client])
+                    additional = np.random.choice(dataidx_map[client], size=needed, replace=True)
+                    dataidx_map[client].extend(additional.tolist())
+
+        else:
+            # 原有的分配策略，适用于 num_clients != 2 (逻辑不变，如果需要同样可重复补足)
+            try_cnt = 1
+            while True:
+                if try_cnt > 1:
+                    print(f'第 {try_cnt} 次尝试分配数据。')
+
+                idx_batch = [[] for _ in range(num_clients)]
+                for k in range(K):
+                    idx_k = np.where(dataset_label == k)[0]
+                    np.random.shuffle(idx_k)
+                    proportions = np.random.dirichlet(np.repeat(alpha, num_clients))
+                    
+                    # 确保每个客户端的数据量不超过 target_count
+                    proportions = np.array([p * (len(idx_j) < target_count) for p, idx_j in zip(proportions, idx_batch)])
+                    if proportions.sum() == 0:
+                        proportions = np.ones(num_clients) / num_clients  # 防止除以零
+                    else:
+                        proportions = proportions / proportions.sum()
+                    
+                    split_points = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
+                    idx_pieces = np.split(idx_k, split_points)
+                    
+                    for i, piece in enumerate(idx_pieces):
+                        idx_batch[i].extend(piece.tolist())
+                
+                min_size = min(len(idx_j) for idx_j in idx_batch)
+                if min_size >= least_samples:
+                    break
+                try_cnt += 1
+            
+            # 初步分配完成
+            for j in range(num_clients):
+                dataidx_map[j] = idx_batch[j]
+            
+            # *** 归一化处理开始 ***
+            # 1. 为客户端0选择指定数量的标签
+            all_labels = np.arange(K)
+            chosen_labels = np.random.choice(all_labels, size=client0_label_num, replace=True)
+            
+            # 2. 从选择的标签中获取所有对应的索引
+            chosen_indices = np.where(np.isin(dataset_label, chosen_labels))[0]
+            
+            # 3. 随机选取 target_count 个样本分配给客户端0，不够则重复
+            if len(chosen_indices) < target_count:
+                # 重复补足
+                selected_client0_indices = np.random.choice(chosen_indices, size=target_count, replace=True)
+            else:
+                selected_client0_indices = np.random.choice(chosen_indices, size=target_count, replace=False)
+            dataidx_map[0] = selected_client0_indices.tolist()
+            
+            # 4. 确保其他客户端也有 target_count 个样本，不够则重复
+            for j in range(1, num_clients):
+                client_indices = dataidx_map[j]
+                if len(client_indices) < target_count:
+                    needed = target_count - len(client_indices)
+                    additional = np.random.choice(client_indices, size=needed, replace=True)
+                    dataidx_map[j].extend(additional.tolist())
+                else:
+                    selected_indices = np.random.choice(client_indices, size=target_count, replace=False)
+                    dataidx_map[j] = selected_indices.tolist()
+
+        # 输出 dataidx_map 以检查分配结果
+        print("数据分配结果 (dataidx_map):")
+        for client, indices in dataidx_map.items():
+            print(f"客户端 {client}: {len(indices)} 个样本")
+
+                
     elif partition == 'exdir':
         r'''This strategy comes from https://arxiv.org/abs/2311.03154
         See details in https://github.com/TsingZ0/PFLlib/issues/139
@@ -273,33 +424,3 @@ def save_file(config_path, train_path, test_path, train_data, test_data, num_cli
         ujson.dump(config, f)
 
     print("Finish generating dataset.\n")
-
-
-class ImageDataset(Dataset):
-    def __init__(self, dataframe, image_folder, transform=None):
-        """
-        Args:
-            dataframe (pd.DataFrame): DataFrame containing file names
-            image_folder (str): Path to the folder containing the images
-            transform (callable, optional): Optional transform to be applied to the image
-        """
-        self.dataframe = dataframe
-        self.image_folder = image_folder
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.dataframe)
-
-    def __getitem__(self, idx):
-        # Get the file name from the DataFrame
-        img_name = self.dataframe.iloc[idx]['file_name']
-        img_label = self.dataframe.iloc[idx]['class']
-        img_path = os.path.join(self.image_folder, img_name)
-        
-        # Load the image using PIL
-        image = Image.open(img_path).convert('RGB')  # Ensure RGB if not grayscale
-        
-        if self.transform:
-            image = self.transform(image)
-        
-        return image, img_label
